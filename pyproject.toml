@@ -1,0 +1,14 @@
+[project]
+name = "conversational-ai-agent-for-kirana-stores"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+	"streamlit",
+	"streamlit-mic-recorder",
+	"google-generativeai",
+	"langgraph",
+	"gTTS"
+	,"python-dotenv"
+]
