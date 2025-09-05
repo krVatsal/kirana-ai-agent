@@ -21,10 +21,10 @@ from storage import init_db, save_order, update_order_status, load_orders, save_
 
 # ---------------- Inventory (only hardcoded domain data) -----------------
 INVENTORY = {
-    'milk': {'hindi': ['doodh'], 'qty': 10, 'unit': 'packet'},
-    'bread': {'hindi': ['bread'], 'qty': 5, 'unit': 'loaf'},
-    'rice': {'hindi': ['chawal'], 'qty': 8, 'unit': 'kilo'},
-    'maggi': {'hindi': ['maggi'], 'qty': 12, 'unit': 'packet'},
+    'milk': {'hindi': ['doodh'], 'qty': 10, 'unit': 'packet', 'price': 25.0},
+    'bread': {'hindi': ['bread'], 'qty': 5, 'unit': 'loaf', 'price': 35.0},
+    'rice': {'hindi': ['chawal'], 'qty': 8, 'unit': 'kilo', 'price': 80.0},
+    'maggi': {'hindi': ['maggi'], 'qty': 12, 'unit': 'packet', 'price': 15.0},
 }
 
 # ---------------- Session State Initialization -----------------
@@ -173,7 +173,7 @@ def gemini_parse(user_text: str):
 
 # ---------------- Low Stock Monitoring Agent -----------------
 def check_low_stock_and_alert():
-    """Auto stock monitoring agent - alerts when inventory is low"""
+    """Auto stock monitoring agent - checks for low inventory but doesn't add to chat"""
     low_stock_items = []
     for item, stock in state.inventory.items():
         # Consider stock low if less than 5 units
@@ -181,14 +181,9 @@ def check_low_stock_and_alert():
             low_stock_items.append(f"{item} ({stock} left)")
     
     if low_stock_items:
-        alert_msg = f"⚠️ LOW STOCK ALERT: {', '.join(low_stock_items)}. Please restock these items."
-        
-        # Add alert to chat if not already present in last 3 messages
-        if not any(msg.get('text', '').startswith('⚠️ LOW STOCK ALERT') for msg in state.chat[-3:]):
-            state.chat.append({"role": "assistant", "text": alert_msg})
-            save_chat('assistant', alert_msg)
-            return True
-    return False
+        # Just return the alert info for shopkeeper dashboard, don't add to chat
+        return low_stock_items
+    return []
 
 # ---------------- Order Handling -----------------
 def apply_order(items, raw_request:str, response_text:str):
@@ -217,9 +212,6 @@ def apply_order(items, raw_request:str, response_text:str):
         state.order_counter += 1
         state.orders.append({"id": order_id, "items": applied_pairs, "status": "processing", "total_amount": total_amount})
         save_order(order_id, 'processing', detailed_items, raw_request, response_text, total_amount)
-        
-        # Auto check for low stock after order
-        check_low_stock_and_alert()
     
     return applied_pairs, unavailable, order_id
 
@@ -241,9 +233,6 @@ def recompute_inventory_from_orders():
             if item_name in rebuilt:
                 rebuilt[item_name] = max(0, rebuilt[item_name] - qty)
     state.inventory = rebuilt
-    
-    # Auto check for low stock after inventory rebuild
-    check_low_stock_and_alert()
 
 # -------- Rerun helper (handles Streamlit version differences) --------
 def force_rerun():
@@ -326,42 +315,178 @@ st.set_page_config(page_title="Kirana AI Agent", layout="wide")
 tabs = st.tabs(["Customer App", "Shopkeeper Dashboard"])  # Could add Analytics later
 
 def render_shopkeeper_dashboard(key_prefix: str = "shop_tab"):
-    st.header("Shopkeeper Dashboard")
-    st.subheader("Inventory")
-    st.table([
-        { 'Item': k, 'Remaining Qty': state.inventory.get(k,0), 'Unit': INVENTORY[k]['unit'] }
-        for k in INVENTORY
-    ])
-
-    st.subheader("Orders")
+    st.header("🏪 Shopkeeper Dashboard")
+    
+    # Check for low stock and show alert
+    low_stock_items = check_low_stock_and_alert()
+    if low_stock_items:
+        st.error(f"⚠️ **LOW STOCK ALERT**: {', '.join(low_stock_items)}. Please restock these items!")
+    
+    # Simple inventory table
+    st.subheader("📦 Inventory")
+    inventory_data = []
+    for item_name in INVENTORY:
+        current_stock = state.inventory.get(item_name, 0)
+        unit = INVENTORY[item_name]['unit']
+        price = INVENTORY[item_name]['price']
+        
+        inventory_data.append({
+            'Item': item_name.title(),
+            'Stock': f"{current_stock} {unit}",
+            'Price': f"₹{price:.2f}",
+            'Status': "🔴 Low" if current_stock < 5 else "✅ OK"
+        })
+    
+    st.dataframe(inventory_data, use_container_width=True)
+    
+    # Metrics row
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        total_orders = len(state.orders)
+        st.markdown(f"""
+        <div class="metric-card">
+            <h3 style="color: #128c7e; margin: 0;">📦 {total_orders}</h3>
+            <p style="margin: 5px 0 0 0;">Total Orders</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        total_revenue = sum(o.get('total_amount', 0) for o in state.orders if o.get('status') == 'delivered')
+        st.markdown(f"""
+        <div class="metric-card">
+            <h3 style="color: #25d366; margin: 0;">₹{total_revenue:.0f}</h3>
+            <p style="margin: 5px 0 0 0;">Revenue</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col3:
+        pending_orders = len([o for o in state.orders if o.get('status') != 'delivered'])
+        st.markdown(f"""
+        <div class="metric-card">
+            <h3 style="color: #ffc107; margin: 0;">⏳ {pending_orders}</h3>
+            <p style="margin: 5px 0 0 0;">Pending Orders</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col4:
+        low_stock_count = len([k for k in state.inventory if state.inventory.get(k, 0) < 5])
+        st.markdown(f"""
+        <div class="metric-card">
+            <h3 style="color: #dc3545; margin: 0;">⚠️ {low_stock_count}</h3>
+            <p style="margin: 5px 0 0 0;">Low Stock Items</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    # Inventory Section
+    st.markdown("### 📦 Inventory Status")
+    
+    # Display inventory in a cleaner way
+    for item, stock in state.inventory.items():
+        unit = INVENTORY[item]['unit']
+        price = INVENTORY[item]['price']
+        is_low_stock = stock < 5
+        
+        card_class = "inventory-card low-stock" if is_low_stock else "inventory-card"
+        status_icon = "⚠️" if is_low_stock else "✅"
+        
+        st.markdown(f"""
+        <div class="{card_class}">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                    <h4 style="margin: 0; color: #333;">{status_icon} {item}</h4>
+                    <p style="margin: 5px 0 0 0; color: #666;">₹{price}/{unit}</p>
+                </div>
+                <div style="text-align: right;">
+                    <h3 style="margin: 0; color: {'#dc3545' if is_low_stock else '#25d366'};">{stock}</h3>
+                    <p style="margin: 0; color: #666;">{unit}s</p>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    # Orders Section
+    st.markdown("### 📋 Recent Orders")
+    
     if state.orders:
-        for _o in state.orders[-20:][::-1]:
-            _total = _o.get('total_amount', 0.0)
-            st.markdown(
-                f"**Order #{_o['id']}** - Status: {_o['status']} | Items: " +
-                ', '.join([f"{qty} {name}" for name, qty in _o['items']]) +
-                f" | Total: ₹{_total:.2f}"
-            )
+        for order in state.orders[-10:][::-1]:  # Show last 10 orders
+            status = order.get('status', 'processing')
+            total = order.get('total_amount', 0.0)
+            items_text = ', '.join([f"{qty} {name}" for name, qty in order['items']])
+            
+            status_colors = {
+                'processing': '#ffc107',
+                'out-for-delivery': '#17a2b8', 
+                'delivered': '#28a745'
+            }
+            
+            status_icons = {
+                'processing': '🔄',
+                'out-for-delivery': '🚚',
+                'delivered': '✅'
+            }
+            
+            st.markdown(f"""
+            <div class="order-card status-{status}">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <h4 style="margin: 0; color: #333;">{status_icons.get(status, '📦')} Order #{order['id']}</h4>
+                        <p style="margin: 5px 0; color: #666;">{items_text}</p>
+                        <span style="background: {status_colors.get(status, '#6c757d')}; color: white; padding: 3px 8px; border-radius: 15px; font-size: 12px;">
+                            {status.replace('-', ' ').title()}
+                        </span>
+                    </div>
+                    <div style="text-align: right;">
+                        <h3 style="margin: 0; color: #25d366;">₹{total:.2f}</h3>
+                    </div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        # Action buttons
+        st.markdown("### 🔧 Quick Actions")
         col_a, col_b, col_c = st.columns(3)
+        
         with col_a:
-            if st.button("Progress Status Simulation", key=f"{key_prefix}_prog_status"):
+            if st.button("🔄 Update Order Status", key=f"{key_prefix}_prog_status", use_container_width=True):
                 update_statuses()
+                st.success("Order statuses updated!")
                 force_rerun()
+        
         with col_b:
-            if st.button("Reload From DB", key=f"{key_prefix}_reload_db"):
+            if st.button("🔄 Reload from Database", key=f"{key_prefix}_reload_db", use_container_width=True):
                 state.orders = load_orders()
                 state.chat = load_chat()
                 recompute_inventory_from_orders()
+                st.success("Data reloaded from database!")
                 force_rerun()
+        
         with col_c:
-            if st.button("Recompute Inventory", key=f"{key_prefix}_recompute_inv"):
+            if st.button("📊 Recompute Inventory", key=f"{key_prefix}_recompute_inv", use_container_width=True):
                 recompute_inventory_from_orders()
-                st.success("Inventory recomputed from all orders.")
+                st.success("Inventory recomputed from orders!")
     else:
-        st.info("No orders yet.")
-
+        st.markdown("""
+        <div style="text-align: center; padding: 40px; background: white; border-radius: 10px; margin: 20px 0;">
+            <h3 style="color: #666;">📦 No orders yet</h3>
+            <p style="color: #999;">Orders will appear here once customers start placing them</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # API Status
     if not model:
-        st.warning("Gemini API key not configured. Set GOOGLE_API_KEY for full AI responses.")
+        st.markdown("""
+        <div style="background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 10px; padding: 15px; margin: 20px 0;">
+            <h4 style="color: #856404; margin: 0;">⚠️ API Configuration</h4>
+            <p style="color: #856404; margin: 5px 0 0 0;">Gemini API key not configured. Set GOOGLE_API_KEY for full AI responses.</p>
+        </div>
+        """, unsafe_allow_html=True)
 
 
 
@@ -476,26 +601,39 @@ with tabs[0]:
             background: #25d366 !important;
             color: white !important;
             border: none !important;
-            border-radius: 50% !important;
-            width: 45px !important;
-            height: 45px !important;
-            font-size: 18px !important;
+            border-radius: 25px !important;
+            padding: 12px 20px !important;
+            font-size: 16px !important;
+            font-weight: 600 !important;
             transition: all 0.3s ease !important;
             display: flex !important;
             align-items: center !important;
             justify-content: center !important;
             box-shadow: 0 2px 8px rgba(37, 211, 102, 0.3) !important;
             min-height: 45px !important;
+            width: auto !important;
+            height: auto !important;
+            white-space: nowrap !important;
         }
         .stButton > button:hover {
             background: #128c7e !important;
-            transform: scale(1.05) !important;
+            transform: translateY(-2px) !important;
             box-shadow: 0 4px 12px rgba(18, 140, 126, 0.4) !important;
         }
         .stButton > button:disabled {
             background: #ccc !important;
             color: #999 !important;
             box-shadow: none !important;
+            transform: none !important;
+        }
+        
+        /* Special styling for voice and send buttons in chat */
+        .chat-input .stButton > button {
+            border-radius: 50% !important;
+            width: 50px !important;
+            height: 50px !important;
+            padding: 0 !important;
+            font-size: 20px !important;
         }
         @keyframes pulse {
             0% { transform: scale(1); }
@@ -553,7 +691,7 @@ with tabs[0]:
     st.markdown('</div>', unsafe_allow_html=True)
     
     # WhatsApp-style input bar
-    st.markdown('<div class="input-container">', unsafe_allow_html=True)
+    st.markdown('<div class="input-container chat-input">', unsafe_allow_html=True)
     
     col1, col2, col3 = st.columns([1, 8, 1])
     

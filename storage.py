@@ -69,11 +69,11 @@ def load_chat(limit:int=200):
     return list(reversed(messages))
 
 def price_for_item(name:str) -> float:
-    # simple demo pricing
+    # Updated prices to match INVENTORY
     base = {
-        'milk': 50.0,
-        'bread': 30.0,
-        'rice': 60.0,
+        'milk': 25.0,
+        'bread': 35.0,
+        'rice': 80.0,
         'maggi': 15.0
     }
     return base.get(name, 10.0)
@@ -91,9 +91,9 @@ _order_thread_started = False
 _lock = threading.Lock()
 
 PRICES = {
-    'milk': 50.0,
-    'bread': 30.0,
-    'rice': 60.0,
+    'milk': 25.0,
+    'bread': 35.0,
+    'rice': 80.0,
     'maggi': 15.0,
 }
 
