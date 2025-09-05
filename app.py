@@ -62,6 +62,10 @@ if 'pending_voice_text' not in state:
     state.pending_voice_text = ''
 if 'manual_text_input' not in state:
     state.manual_text_input = ''
+if 'msg_input_prefill' not in state:
+    state.msg_input_prefill = ''
+if 'clear_msg_input' not in state:
+    state.clear_msg_input = False
 if 'last_stt_error' not in state:
     state.last_stt_error = None
 if 'stt_component_version' not in state:
@@ -451,49 +455,66 @@ with tabs[0]:
         key="speech_eval"
     )
 
-    # Capture voice payload ONLY (no auto-send) and prefill input
-# Capture voice payload and prefill input
+    # Handle voice payload: set prefill (before widget creation) then rerun
     if recognized_payload:
-     try:
-        data_obj = json.loads(recognized_payload)
-        sid = data_obj.get('id')
-        txt = (data_obj.get('text') or '').strip()
-     except Exception:
-        sid = None; txt = ''
-     if sid and txt and sid != state.last_voice_session_id:
-        state.last_voice_session_id = sid
-        state.last_voice_text = txt
-        state.pending_voice_text = txt
-        # Prefill the text box directly
-        st.session_state['msg_input_widget'] = txt
+        try:
+            data_obj = json.loads(recognized_payload)
+            sid = data_obj.get('id')
+            txt = (data_obj.get('text') or '').strip()
+        except Exception:
+            sid = None; txt = ''
+        if sid and txt and sid != state.last_voice_session_id:
+            state.last_voice_session_id = sid
+            state.last_voice_text = txt
+            state.pending_voice_text = txt
+            state.msg_input_prefill = txt
+            # remove existing widget value so new value param applies
+            if 'msg_input_widget' in st.session_state:
+                del st.session_state['msg_input_widget']
+            force_rerun()
 
+    # Clear request from previous send
+    if state.clear_msg_input:
+        if 'msg_input_widget' in st.session_state:
+            del st.session_state['msg_input_widget']
+        state.clear_msg_input = False
+        if state.msg_input_prefill:
+            state.msg_input_prefill = ''
+
+    # Determine initial value only if widget not yet created
+    if 'msg_input_widget' not in st.session_state:
+        initial_value = state.msg_input_prefill or ''
+    else:
+        initial_value = st.session_state.get('msg_input_widget', '')
 
     manual_col, send_col = st.columns([4,1])
     with manual_col:
-     manual_text = st.text_input(
-        "Type a message",
-        placeholder="e.g. 2 doodh 1 bread status?",
-        key='msg_input_widget'
-    )
-
-     if state.pending_voice_text and manual_text == state.pending_voice_text:
-        st.caption("Captured from voice. Edit if needed, then press Send.")
-
+        manual_text = st.text_input(
+            "Type a message",
+            placeholder="e.g. 2 doodh 1 bread status?",
+            value=initial_value,
+            key='msg_input_widget'
+        )
+        if state.pending_voice_text and manual_text == state.pending_voice_text:
+            st.caption("Captured from voice. Edit if needed, then press Send.")
+        # reset prefill so next rerun doesn't overwrite user edits
+        state.msg_input_prefill = ''
 
     with send_col:
-     if st.button("Send", disabled=not manual_text.strip(), use_container_width=True):
-        user_msg = manual_text.strip()
-        with st.spinner("Thinking..."):
-            state.chat.append({"role":"user","text":user_msg})
-            save_chat('user', user_msg)
-            parsed = process_user_message(user_msg)
-            reply = parsed.get('response_text', '(No response)')
-            state.chat.append({"role":"assistant","text":reply})
-            save_chat('assistant', reply, parsed.get('order_id'))
-            speak(reply)
-        if state.pending_voice_text == user_msg:
-            state.pending_voice_text = ''
-        st.session_state['msg_input_widget'] = ''   # clear box
+        if st.button("Send", disabled=not manual_text.strip(), use_container_width=True):
+            user_msg = manual_text.strip()
+            with st.spinner("Thinking..."):
+                state.chat.append({"role":"user","text":user_msg})
+                save_chat('user', user_msg)
+                parsed = process_user_message(user_msg)
+                reply = parsed.get('response_text', '(No response)')
+                state.chat.append({"role":"assistant","text":reply})
+                save_chat('assistant', reply, parsed.get('order_id'))
+                speak(reply)
+            if state.pending_voice_text == user_msg:
+                state.pending_voice_text = ''
+            state.clear_msg_input = True
+            force_rerun()
 
 
 
