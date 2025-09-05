@@ -70,8 +70,17 @@ if 'last_stt_error' not in state:
     state.last_stt_error = None
 if 'stt_component_version' not in state:
     state.stt_component_version = 0
-# ---------------- Gemini Setup -----------------
-API_KEY = os.getenv("GOOGLE_API_KEY")
+# ---------------- Gemini Setup (support st.secrets) -----------------
+def _fetch_api_key():
+    # Priority: st.secrets (flat), st.secrets["google"]["api_key"], then environment
+    try:
+        if 'GOOGLE_API_KEY' in st.secrets:
+            return st.secrets['GOOGLE_API_KEY']
+    except Exception:
+        pass
+    return os.getenv('GOOGLE_API_KEY')
+
+API_KEY = _fetch_api_key()
 if API_KEY and genai:
     try:
         genai.configure(api_key=API_KEY)
