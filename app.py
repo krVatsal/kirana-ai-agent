@@ -5,11 +5,13 @@ import io
 from datetime import datetime
 import streamlit as st
 from langgraph.graph import StateGraph, END
-# Removed mic_recorder speech_to_text (replaced with Web Speech API JS)
 from gtts import gTTS
 import streamlit.components.v1 as components
-from dotenv import load_dotenv 
-from streamlit_js_eval import streamlit_js_eval
+from dotenv import load_dotenv
+from bokeh.models.widgets import Button
+from bokeh.models import CustomJS
+from streamlit_bokeh_events import streamlit_bokeh_events
+
 load_dotenv()
 
 import google.generativeai as genai
@@ -52,23 +54,12 @@ if 'chat_loaded' not in state:
             if item_name in base_inventory:
                 base_inventory[item_name] = max(0, base_inventory[item_name] - qty)
     state.inventory = base_inventory
-if 'last_voice_processed' not in state:
-    state.last_voice_processed = None
-if 'last_voice_session_id' not in state:
-    state.last_voice_session_id = None
-if 'last_voice_text' not in state:
-    state.last_voice_text = None
-if 'pending_voice_text' not in state:
-    state.pending_voice_text = ''
 if 'manual_text_input' not in state:
     state.manual_text_input = ''
 if 'msg_input_prefill' not in state:
     state.msg_input_prefill = ''
 if 'clear_msg_input' not in state:
     state.clear_msg_input = False
-if 'last_stt_error' not in state:
-    state.last_stt_error = None
-if 'stt_component_version' not in state:
     state.stt_component_version = 0
 # ---------------- Gemini Setup (support st.secrets) -----------------
 def _fetch_api_key():
@@ -180,6 +171,25 @@ def gemini_parse(user_text: str):
             continue
     return {"intent": "unknown", "items": [], "response_text": f"Parsing error: {last_error}"}
 
+# ---------------- Low Stock Monitoring Agent -----------------
+def check_low_stock_and_alert():
+    """Auto stock monitoring agent - alerts when inventory is low"""
+    low_stock_items = []
+    for item, stock in state.inventory.items():
+        # Consider stock low if less than 5 units
+        if stock < 5:
+            low_stock_items.append(f"{item} ({stock} left)")
+    
+    if low_stock_items:
+        alert_msg = f"⚠️ LOW STOCK ALERT: {', '.join(low_stock_items)}. Please restock these items."
+        
+        # Add alert to chat if not already present in last 3 messages
+        if not any(msg.get('text', '').startswith('⚠️ LOW STOCK ALERT') for msg in state.chat[-3:]):
+            state.chat.append({"role": "assistant", "text": alert_msg})
+            save_chat('assistant', alert_msg)
+            return True
+    return False
+
 # ---------------- Order Handling -----------------
 def apply_order(items, raw_request:str, response_text:str):
     unavailable = []
@@ -207,6 +217,10 @@ def apply_order(items, raw_request:str, response_text:str):
         state.order_counter += 1
         state.orders.append({"id": order_id, "items": applied_pairs, "status": "processing", "total_amount": total_amount})
         save_order(order_id, 'processing', detailed_items, raw_request, response_text, total_amount)
+        
+        # Auto check for low stock after order
+        check_low_stock_and_alert()
+    
     return applied_pairs, unavailable, order_id
 
 def update_statuses():
@@ -227,6 +241,9 @@ def recompute_inventory_from_orders():
             if item_name in rebuilt:
                 rebuilt[item_name] = max(0, rebuilt[item_name] - qty)
     state.inventory = rebuilt
+    
+    # Auto check for low stock after inventory rebuild
+    check_low_stock_and_alert()
 
 # -------- Rerun helper (handles Streamlit version differences) --------
 def force_rerun():
@@ -305,7 +322,7 @@ def process_user_message(user_text: str):
 
 
 # ---------------- UI Layout -----------------
-st.set_page_config(page_title="Kirana AI Agent (Voice AI)", layout="wide")
+st.set_page_config(page_title="Kirana AI Agent", layout="wide")
 tabs = st.tabs(["Customer App", "Shopkeeper Dashboard"])  # Could add Analytics later
 
 def render_shopkeeper_dashboard(key_prefix: str = "shop_tab"):
@@ -350,137 +367,168 @@ def render_shopkeeper_dashboard(key_prefix: str = "shop_tab"):
 
 
 with tabs[0]:
-    st.header("Customer Assistant")
-    st.caption("Talk or type in Hindi / English / Hinglish. Orders & queries handled by the AI.")
-
-    # Global CSS for cleaner UI
+    # WhatsApp-like Chat Interface
     st.markdown(
         """
         <style>
-    /* Layout padding reduction */
-    .block-container {padding-top:0.6rem !important;}
-    .better-button {position:relative;display:inline-flex;align-items:center;gap:.55rem;background:linear-gradient(135deg,#2563eb,#1d4ed8);color:#fff !important;border:1px solid #1e40af;padding:0.60rem 1.05rem;border-radius:10px;font-weight:600;font-size:.85rem;letter-spacing:.3px;cursor:pointer;box-shadow:0 2px 4px rgba(0,0,0,.4),0 0 0 2px rgba(37,99,235,.18);transition:background .18s,border-color .18s,transform .18s,box-shadow .25s;}
-    .better-button:hover:not([disabled]) {background:linear-gradient(135deg,#1d4ed8,#2563eb);transform:translateY(-1px);}
-    .better-button:active:not([disabled]) {transform:translateY(0);background:#1e3a8a;}
-    .better-button:focus-visible {outline:2px solid #93c5fd;outline-offset:3px;}
-    .better-button[disabled] {opacity:.55;cursor:not-allowed;}
-    .better-button[data-state='listening'] {background:#dc2626;border-color:#b91c1c;box-shadow:0 0 0 2px rgba(239,68,68,.35),0 4px 10px -2px rgba(239,68,68,.4);}
-    .better-button[data-state='listening'] .btn-label:before {content:'\25CF';display:inline-block;color:#fecaca;animation:blink 1s linear infinite;margin-right:4px;font-size:.7rem;}
-    .better-button[data-state='listening']::after {content:"";position:absolute;inset:-6px;border:2px solid rgba(239,68,68,.45);border-radius:14px;animation:pulse 1.2s ease-in-out infinite;}
-    @keyframes pulse {0% {transform:scale(.92);opacity:1;}70% {transform:scale(1.15);opacity:0;}100% {opacity:0;}}
-    @keyframes blink {0%,60% {opacity:1;}61%,100% {opacity:.2;}}
-    .better-button .btn-label {display:inline-block;}
-    /* Voice input container */
-    .voice-box {border:1px solid #30363d;padding:0.9rem 1.05rem;border-radius:12px;background:#1d232a;color:#d2d8df;}
-    .voice-title {font-size:1.0rem;font-weight:600;margin-bottom:0.35rem;display:flex;align-items:center;gap:.4rem;color:#f1f5f9;}
-    .voice-box button {background:#2563eb;color:#ffffff !important;border:1px solid #1d4ed8;padding:0.55rem 0.95rem;border-radius:8px;font-weight:600;cursor:pointer;transition:background .15s,border-color .15s;}
-    .voice-box button:hover {background:#1d4ed8;border-color:#1e40af;}
-    .voice-box button:active {background:#1e3a8a;border-color:#1e3a8a;}
-    #sr_status {color:#94a3b8;}
-        .chat-wrap {border:1px solid #30363d;border-radius:12px;padding:.75rem;background:#0f1115;max-height:480px;overflow-y:auto;}
-        .msg-user {background:#2563eb10;border:1px solid #2563eb30;padding:.55rem .75rem;border-radius:10px;margin-bottom:.6rem;}
-        .msg-ai {background:#10b98110;border:1px solid #10b98130;padding:.55rem .75rem;border-radius:10px;margin-bottom:.6rem;}
-        .badge {padding:2px 8px;border-radius:12px;font-size:.7rem;font-weight:600;display:inline-block;}
-        .status-processing {background:#f59e0b22;color:#f59e0b;border:1px solid #f59e0b55;}
-        .status-out-for-delivery {background:#6366f122;color:#6366f1;border:1px solid #6366f155;}
-        .status-delivered {background:#10b98122;color:#10b981;border:1px solid #10b98155;}
-        ::-webkit-scrollbar {width:8px;}::-webkit-scrollbar-thumb {background:#333;border-radius:6px;}
+        /* WhatsApp-style Chat UI */
+        .main-container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: #1a1a1a;
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+        }
+        .chat-header {
+            background: #128c7e;
+            color: white;
+            padding: 15px 20px;
+            font-weight: bold;
+            font-size: 18px;
+        }
+        .chat-container {
+            height: 500px;
+            overflow-y: auto;
+            padding: 10px;
+            background: #0a0a0a;
+            background-image: url("data:image/svg+xml,%3csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3e%3cg fill='none' fill-rule='evenodd'%3e%3cg fill='%23333333' fill-opacity='0.05'%3e%3ccircle cx='30' cy='30' r='4'/%3e%3c/g%3e%3c/g%3e%3c/svg%3e");
+        }
+        .msg-bubble {
+            display: inline-block;
+            min-width: 80px;
+            max-width: min(70%, 400px);
+            margin: 5px 0;
+            padding: 8px 12px;
+            border-radius: 18px;
+            word-wrap: break-word;
+            position: relative;
+            width: fit-content;
+        }
+        .msg-user {
+            background: #005c4b;
+            color: white;
+            text-align: left;
+        }
+        .msg-ai {
+            background: #1f2937;
+            color: white;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.3);
+        }
+        .input-container {
+            display: flex;
+            align-items: center;
+            padding: 10px;
+            background: #2a2a2a;
+            gap: 8px;
+        }
+        .voice-btn {
+            background: #25d366 !important;
+            border: none !important;
+            border-radius: 50% !important;
+            width: 45px !important;
+            height: 45px !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            color: white !important;
+            font-size: 18px !important;
+            cursor: pointer !important;
+            transition: all 0.2s !important;
+            box-shadow: 0 2px 8px rgba(37, 211, 102, 0.3) !important;
+        }
+        .voice-btn:hover {
+            background: #128c7e !important;
+            transform: scale(1.05) !important;
+            box-shadow: 0 4px 12px rgba(18, 140, 126, 0.4) !important;
+        }
+        .voice-btn.listening {
+            background: #ff4444 !important;
+            animation: pulse 1.5s infinite !important;
+        }
+        .send-btn {
+            background: #25d366 !important;
+            border: none !important;
+            border-radius: 50% !important;
+            width: 45px !important;
+            height: 45px !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            color: white !important;
+            font-size: 18px !important;
+            cursor: pointer !important;
+            transition: all 0.2s !important;
+            box-shadow: 0 2px 8px rgba(37, 211, 102, 0.3) !important;
+        }
+        .send-btn:hover {
+            background: #128c7e !important;
+            transform: scale(1.05) !important;
+            box-shadow: 0 4px 12px rgba(18, 140, 126, 0.4) !important;
+        }
+        .send-btn:disabled {
+            background: #ccc !important;
+            cursor: not-allowed !important;
+            box-shadow: none !important;
+        }
+        /* Override Streamlit button styles */
+        .stButton > button {
+            background: #25d366 !important;
+            color: white !important;
+            border: none !important;
+            border-radius: 50% !important;
+            width: 45px !important;
+            height: 45px !important;
+            font-size: 18px !important;
+            transition: all 0.3s ease !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            box-shadow: 0 2px 8px rgba(37, 211, 102, 0.3) !important;
+            min-height: 45px !important;
+        }
+        .stButton > button:hover {
+            background: #128c7e !important;
+            transform: scale(1.05) !important;
+            box-shadow: 0 4px 12px rgba(18, 140, 126, 0.4) !important;
+        }
+        .stButton > button:disabled {
+            background: #ccc !important;
+            color: #999 !important;
+            box-shadow: none !important;
+        }
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.1); }
+            100% { transform: scale(1); }
+        }
+        .stTextInput > div > div > input {
+            border-radius: 25px !important;
+            border: 1px solid #ddd !important;
+            padding: 12px 16px !important;
+            font-size: 14px !important;
+        }
+        .voice-status {
+            font-size: 12px;
+            color: #666;
+            margin-left: 10px;
+        }
+        /* Hide default streamlit elements */
+        .stSelectbox > label, .stTextInput > label {
+            display: none !important;
+        }
         </style>
         """,
         unsafe_allow_html=True
     )
 
-    lang_label = st.selectbox(
-        "Language",
-        options=["Hindi (hi-IN)", "English (en-IN)"],
-        index=0,
-        help="Choose before recording"
-    )
+    # WhatsApp-like container
+    st.markdown('<div class="main-container">', unsafe_allow_html=True)
+    st.markdown('<div class="chat-header">🛒 Kirana AI Assistant</div>', unsafe_allow_html=True)
+    
+    # Language selector (compact)
+    lang_label = st.selectbox("", options=["Hindi (hi-IN)", "English (en-IN)"], index=0, label_visibility="collapsed")
     lang_code = "hi-IN" if lang_label.startswith("Hindi") else "en-IN"
-
-    # Install parent listener (once) to capture postMessage from iframe
-    components.html("""
-    <script>
-    if(!window._VOICE_LISTENER_INSTALLED){
-    window._VOICE_TRANSCRIPT_JSON = window._VOICE_TRANSCRIPT_JSON || '';
-    window.addEventListener('message', (e)=>{
-       if(e.data && e.data.type==='VOICE_TRANSCRIPT' && e.data.value){
-        try{ window._VOICE_TRANSCRIPT_JSON = JSON.stringify(e.data.value);}catch(err){console.warn(err);} }
-    });
-    window._VOICE_LISTENER_INSTALLED = true;
-    }
-    </script>
-    """, height=10)
-
-    # Web Speech API block (runs in iframe, sends transcript via postMessage to parent)
-    speech_recognition = """
-    <script>
-    const langCode = '%s';
-    let recognition; let listening=false;
-    function init(){
-        if(!recognition){
-            recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
-            recognition.lang = langCode;
-            recognition.interimResults = false;
-            recognition.maxAlternatives = 1;
-            recognition.onresult = (e)=>{ window._LAST_FINAL = e.results[0][0].transcript; };
-            recognition.onerror = (e)=>{ setStatus('Error: '+ e.error); listening=false; };
-            recognition.onend = ()=>{ if(listening){ listening=false; finalize(); } };
-        }
-    }
-    function setStatus(s){ const el=document.getElementById('sr_status'); if(el) el.innerText=s; }
-    function start(){
-        init();
-        if(listening) return;
-        window._LAST_FINAL='';
-        listening=true;
-        setStatus('Listening...');
-        try { recognition.start(); } catch(err){ setStatus('Start err: '+ err.message); listening=false; }
-    }
-    function finalize(){
-        const t = window._LAST_FINAL || '';
-        const c = document.getElementById('captured_text');
-        if(t){
-            if(c) c.textContent = t;
-            setStatus('Captured');
-            const payload = { id: Date.now().toString() + '-' + Math.random().toString(36).slice(2,8), text: t };
-            window.parent.postMessage({ type:'VOICE_TRANSCRIPT', value: payload }, '*');
-        } else {
-            setStatus('No speech');
-            if(c) c.textContent='';
-        }
-    }
-    </script>
-    <div class='voice-box'>
-      <button class="better-button" onclick="start()"><span class='btn-label'>Start Listening</span></button>
-      <span id='sr_status' style='margin-left:8px;font-size:0.8rem;opacity:0.75; color:#ffffff'>Idle</span>
-      <div id='captured_text' style='margin-top:6px;font-size:0.75rem;color:#cbd5e1;min-height:16px;word-wrap:break-word;'></div>
-      <div style='margin-top:0.6rem;font-size:0.65rem;opacity:0.55;color:#ffffff'>Auto-send enabled.</div>
-    </div>
-    """ % lang_code
-    components.html(speech_recognition, height=140)
-    recognized_payload = streamlit_js_eval(
-        js_expressions="window._VOICE_TRANSCRIPT_JSON",
-        key="speech_eval"
-    )
-
-    # Handle voice payload: set prefill (before widget creation) then rerun
-    if recognized_payload:
-        try:
-            data_obj = json.loads(recognized_payload)
-            sid = data_obj.get('id')
-            txt = (data_obj.get('text') or '').strip()
-        except Exception:
-            sid = None; txt = ''
-        if sid and txt and sid != state.last_voice_session_id:
-            state.last_voice_session_id = sid
-            state.last_voice_text = txt
-            state.pending_voice_text = txt
-            state.msg_input_prefill = txt
-            # remove existing widget value so new value param applies
-            if 'msg_input_widget' in st.session_state:
-                del st.session_state['msg_input_widget']
-            force_rerun()
 
     # Clear request from previous send
     if state.clear_msg_input:
@@ -496,51 +544,102 @@ with tabs[0]:
     else:
         initial_value = st.session_state.get('msg_input_widget', '')
 
-    manual_col, send_col = st.columns([4,1])
-    with manual_col:
+    # Chat messages container
+    for _msg in state.chat[-30:]:  # Show last 30 messages
+        if _msg['role'] == 'user':
+            st.markdown(f'<div style="display: flex; justify-content: flex-end; margin: 5px 0;"><div class="msg-bubble msg-user">{_msg["text"]}</div></div>', unsafe_allow_html=True)
+        else:
+            st.markdown(f'<div style="display: flex; justify-content: flex-start; margin: 5px 0;"><div class="msg-bubble msg-ai">{_msg["text"]}</div></div>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    # WhatsApp-style input bar
+    st.markdown('<div class="input-container">', unsafe_allow_html=True)
+    
+    col1, col2, col3 = st.columns([1, 8, 1])
+    
+    # Voice button using Bokeh - working solution!
+    with col1:
+        stt_button = Button(label="🎤", width=45, height=45)
+        
+        stt_button.js_on_event("button_click", CustomJS(code=f"""
+            var recognition = new webkitSpeechRecognition();
+            recognition.continuous = true;
+            recognition.interimResults = true;
+            recognition.lang = '{lang_code}';
+         
+            recognition.onresult = function (e) {{
+                var value = "";
+                for (var i = e.resultIndex; i < e.results.length; ++i) {{
+                    if (e.results[i].isFinal) {{
+                        value += e.results[i][0].transcript;
+                    }}
+                }}
+                if ( value != "") {{
+                    document.dispatchEvent(new CustomEvent("GET_TEXT", {{detail: value}}));
+                }}
+            }}
+            recognition.start();
+            """))
+
+        voice_result = streamlit_bokeh_events(
+            stt_button,
+            events="GET_TEXT",
+            key="listen",
+            refresh_on_update=False,
+            override_height=50,
+            debounce_time=0)
+
+        # Handle voice result and auto-send
+        if voice_result:
+            if "GET_TEXT" in voice_result:
+                voice_text = voice_result.get("GET_TEXT").strip()
+                if voice_text:
+                    st.success(f"🎤 Heard: {voice_text}")
+                    # Auto-send the voice input
+                    with st.spinner("Processing voice input..."):
+                        state.chat.append({"role":"user","text":voice_text})
+                        save_chat('user', voice_text)
+                        parsed = process_user_message(voice_text)
+                        reply = parsed.get('response_text', '(No response)')
+                        state.chat.append({"role":"assistant","text":reply})
+                        save_chat('assistant', reply, parsed.get('order_id'))
+                        speak(reply)
+                    force_rerun()
+    
+    # Text input
+    with col2:
         manual_text = st.text_input(
-            "Type a message",
-            placeholder="e.g. 2 doodh 1 bread status?",
+            "",
+            placeholder="Type a message...",
             value=initial_value,
-            key='msg_input_widget'
+            key='msg_input_widget',
+            label_visibility="collapsed"
         )
-        if state.pending_voice_text and manual_text == state.pending_voice_text:
-            st.caption("Captured from voice. Edit if needed, then press Send.")
-        # reset prefill so next rerun doesn't overwrite user edits
-        state.msg_input_prefill = ''
+        state.msg_input_prefill = ''  # reset prefill so next rerun doesn't overwrite user edits
 
-    with send_col:
-        if st.button("Send", disabled=not manual_text.strip(), use_container_width=True):
-            user_msg = manual_text.strip()
-            with st.spinner("Thinking..."):
-                state.chat.append({"role":"user","text":user_msg})
-                save_chat('user', user_msg)
-                parsed = process_user_message(user_msg)
-                reply = parsed.get('response_text', '(No response)')
-                state.chat.append({"role":"assistant","text":reply})
-                save_chat('assistant', reply, parsed.get('order_id'))
-                speak(reply)
-            if state.pending_voice_text == user_msg:
-                state.pending_voice_text = ''
-            state.clear_msg_input = True
-            force_rerun()
+    # Send button  
+    with col3:
+        send_clicked = st.button("send", key="send_btn", disabled=not manual_text.strip(), help="Send message")
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)  # Close main container
+    
+    # Process send
+    if send_clicked and manual_text.strip():
+        user_msg = manual_text.strip()
+        with st.spinner("Thinking..."):
+            state.chat.append({"role":"user","text":user_msg})
+            save_chat('user', user_msg)
+            parsed = process_user_message(user_msg)
+            reply = parsed.get('response_text', '(No response)')
+            state.chat.append({"role":"assistant","text":reply})
+            save_chat('assistant', reply, parsed.get('order_id'))
+            speak(reply)
+        state.clear_msg_input = True
+        force_rerun()
 
 
 
-    # Conversation (now only inside Customer App tab)
-    st.divider()
-    st.subheader("Conversation")
-    chat_container = st.container()
-    with chat_container:
-        for _msg in reversed(state.chat[-40:]):
-            if _msg['role'] == 'user':
-                st.markdown(f"<div class='msg-user'><strong>You:</strong> {_msg['text']}</div>", unsafe_allow_html=True)
-            else:
-                st.markdown(f"<div class='msg-ai'><strong>AI:</strong> {_msg['text']}</div>", unsafe_allow_html=True)
-
-    # Fallback inline Shopkeeper dashboard (optional quick view)
-    with st.expander("Shopkeeper Dashboard (Quick View)", expanded=False):
-        render_shopkeeper_dashboard("inline")
 
 # ---------------- Shopkeeper Dashboard -----------------
 with tabs[1]:
