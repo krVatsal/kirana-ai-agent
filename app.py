@@ -733,6 +733,10 @@ with tabs[0]:
                     recognition.onresult = function(event) {{
                         const transcript = event.results[0][0].transcript;
                         
+                        // Store in sessionStorage for Streamlit to access
+                        sessionStorage.setItem('voice_transcript', transcript);
+                        sessionStorage.setItem('voice_timestamp', Date.now().toString());
+                        
                         // Find the text input in parent window and set value
                         const parentDoc = window.parent.document;
                         const inputs = parentDoc.querySelectorAll('input[type="text"]');
@@ -794,6 +798,27 @@ with tabs[0]:
         """
         
         st.components.v1.html(voice_html, height=80)
+    
+    # Check for voice transcript from sessionStorage
+    voice_check_script = """
+    const transcript = sessionStorage.getItem('voice_transcript');
+    const timestamp = sessionStorage.getItem('voice_timestamp');
+    
+    if (transcript && timestamp) {
+        // Clear from storage after reading
+        sessionStorage.removeItem('voice_transcript');
+        sessionStorage.removeItem('voice_timestamp');
+        transcript;
+    } else {
+        null;
+    }
+    """
+    
+    voice_transcript = streamlit_js_eval(js_expressions=voice_check_script, key="voice_check")
+    
+    # If we got a voice transcript, set it in session state
+    if voice_transcript:
+        st.session_state['msg_input_widget'] = voice_transcript
     
     # Text input
     with col2:
