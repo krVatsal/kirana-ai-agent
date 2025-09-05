@@ -54,8 +54,10 @@ if 'chat_loaded' not in state:
     state.inventory = base_inventory
 if 'last_voice_processed' not in state:
     state.last_voice_processed = None
-if 'auto_send' not in state:
-    state.auto_send = True
+if 'last_voice_session_id' not in state:
+    state.last_voice_session_id = None
+if 'last_voice_text' not in state:
+    state.last_voice_text = None
 if 'last_stt_error' not in state:
     state.last_stt_error = None
 if 'stt_component_version' not in state:
@@ -289,187 +291,7 @@ def process_user_message(user_text: str):
 st.set_page_config(page_title="Kirana AI Agent (Voice AI)", layout="wide")
 tabs = st.tabs(["Customer App", "Shopkeeper Dashboard"])  # Could add Analytics later
 
-
-
-
-with tabs[0]:
-    st.header("Customer Voice Assistant")
-    st.caption("Speak or type your request (Hindi / English / Hinglish). Gemini powers intent & response when API key is set.")
-
-    # Centered voice UI container
-    st.markdown(
-        """
-        <style>
-        .voice-box {border:1px solid #444;padding:1.2rem;border-radius:12px;background:#11111110;}
-        .voice-title {font-size:1.05rem;font-weight:600;margin-bottom:0.4rem;}
-        .heard {color:#16c60c;font-weight:500;margin-top:0.5rem;}
-        </style>
-        """,
-        unsafe_allow_html=True
-    )
-    voice_col, controls_col = st.columns([4,1])
-    with voice_col:
-        with st.container():
-            st.markdown('<div class="voice-box"><div class="voice-title">🎙️ Speak</div>', unsafe_allow_html=True)
-            st.write("Click mic, allow permission, speak clearly. If nothing appears, check browser permission.")
-            new_voice_text = None
-            try:
-                # dynamic key to allow reset
-                comp_key = f'user_stt_{state.stt_component_version}'
-                new_voice_text = speech_to_text(language='auto', just_once=True, key=comp_key)
-                state.last_stt_error = None
-            except Exception as e:
-                state.last_stt_error = str(e)
-            if new_voice_text:
-                st.markdown(f"<div class='heard'>Heard: {new_voice_text}</div>", unsafe_allow_html=True)
-            else:
-                st.caption("No transcription yet.")
-            st.markdown('</div>', unsafe_allow_html=True)
-    # Language + Auto-send controls
-    lang_label = st.selectbox(
-        "Speech Language",
-        options=["Hindi (hi-IN)", "English (en-IN)"],
-        index=0,
-        help="Choose language model for recognition before clicking Start Listening"
-    )
-    lang_code = "hi-IN" if lang_label.startswith("Hindi") else "en-IN"
-    state.auto_send = st.checkbox("Auto-send", value=state.auto_send, help="Automatically process transcript when captured")
-
-    # Install parent listener (once) to capture postMessage from iframe
-    components.html("""
-    <script>
-    if(!window._VOICE_LISTENER_INSTALLED){
-      window._VOICE_TRANSCRIPT = window._VOICE_TRANSCRIPT || "";
-      window.addEventListener('message', (e)=>{
-         if(e.data && e.data.type==='VOICE_TRANSCRIPT' && e.data.value){
-            window._VOICE_TRANSCRIPT = e.data.value;
-         }
-      });
-      window._VOICE_LISTENER_INSTALLED = true;
-    }
-    </script>
-    """, height=0)
-
-    # Web Speech API block (runs in iframe, sends transcript via postMessage to parent)
-    speech_recognition = f"""
-    <script>
-    const langCode = '{lang_code}';
-    var recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
-    recognition.lang = langCode;
-    recognition.interimResults = false; // final only
-    recognition.maxAlternatives = 1;
-    let finalTranscript = '';
-    function startRecognition() {{
-        const statusEl = document.getElementById('sr_status');
-        finalTranscript = '';
-        statusEl.innerText = 'Listening...';
-        try {{ recognition.start(); }} catch(e) {{ statusEl.innerText = 'Error starting: ' + e.message; return; }}
-        recognition.onresult = function(event) {{ finalTranscript = event.results[0][0].transcript; }}
-        recognition.onerror = function(e) {{ statusEl.innerText = 'Error: ' + e.error; }}
-        recognition.onend = function() {{
-            if(finalTranscript) {{
-                statusEl.innerText = 'Captured';
-                // send to parent
-                window.parent.postMessage({{type:'VOICE_TRANSCRIPT', value: finalTranscript}}, '*');
-            }} else {{
-                statusEl.innerText = 'No speech detected';
-            }}
-        }}
-    }}
-    </script>
-    <div class='voice-box'>
-      <div class='voice-title'>🎙️ Voice Input ({lang_code})</div>
-      <button onclick="startRecognition()">Start Listening</button>
-      <span id='sr_status' style='margin-left:8px;font-size:0.8rem;opacity:0.75;'>Idle</span>
-      <div style='margin-top:0.7rem;font-size:0.75rem;opacity:0.65;'>Auto-send after you stop speaking is { 'ON' if state.auto_send else 'OFF' }.</div>
-    </div>
-    """
-    components.html(speech_recognition, height=150)
-    recognized_text = streamlit_js_eval(
-        js_expressions="window._VOICE_TRANSCRIPT",
-        key="speech_eval"
-    )
-
-    # Process recognized speech
-    auto_fired = False
-    if state.auto_send and recognized_text and recognized_text.strip() and recognized_text != state.last_voice_processed:
-        with st.spinner("Processing voice..."):
-            state.chat.append({"role":"user","text":recognized_text})
-            save_chat('user', recognized_text)
-            result = process_user_message(recognized_text)
-            reply = result.get('response_text', '(No response)')
-            state.chat.append({"role":"assistant","text":reply})
-            save_chat('assistant', reply, result.get('order_id'))
-            speak(reply)
-            state.last_voice_processed = recognized_text
-            auto_fired = True
-
-    # Manual send button if auto-send disabled
-    if (not state.auto_send) and recognized_text and recognized_text.strip() and recognized_text != state.last_voice_processed:
-        if st.button("Send Recognized Text", type="primary"):
-            with st.spinner("Processing voice..."):
-                state.chat.append({"role":"user","text":recognized_text})
-                save_chat('user', recognized_text)
-                result = process_user_message(recognized_text)
-                reply = result.get('response_text', '(No response)')
-                state.chat.append({"role":"assistant","text":reply})
-                save_chat('assistant', reply, result.get('order_id'))
-                speak(reply)
-                state.last_voice_processed = recognized_text
-
-    # Resend last
-    resend_col, clear_col = st.columns([1,1])
-    with resend_col:
-        if st.button("Resend Last", disabled=not state.last_voice_processed):
-            lv = state.last_voice_processed
-            if lv:
-                state.chat.append({"role":"user","text":lv})
-                save_chat('user', lv)
-                result = process_user_message(lv)
-                reply = result.get('response_text', '(No response)')
-                state.chat.append({"role":"assistant","text":reply})
-                save_chat('assistant', reply, result.get('order_id'))
-                speak(reply)
-    with clear_col:
-        if st.button("Clear Transcript"):
-            state.last_voice_processed = None
-            st.experimental_rerun() if hasattr(st,'experimental_rerun') else st.rerun()
-
-    manual_text = st.text_input("Or type instead:")
-    if st.button("Send Text", use_container_width=True, disabled=not manual_text.strip()):
-        with st.spinner("Processing text..."):
-            state.chat.append({"role":"user","text":manual_text})
-            save_chat('user', manual_text)
-            result = process_user_message(manual_text)
-            reply = result.get('response_text', '(No response)')
-            state.chat.append({"role":"assistant","text":reply})
-            save_chat('assistant', reply, result.get('order_id'))
-            st.markdown(f"**AI:** {reply}")
-            speak(reply)
-
-    with st.expander("Diagnostics", expanded=False):
-        st.json({
-            "recognized_text": recognized_text if recognized_text else None,
-            "auto_send": state.auto_send,
-            "last_voice_processed": state.last_voice_processed,
-            "language_code": lang_code,
-            "model_loaded": bool(model),
-            "orders_count": len(state.orders),
-            "auto_fired": auto_fired,
-        })
-        if getattr(state, 'last_raw_model_output', None):
-            st.text_area("Raw Model Output", state.last_raw_model_output, height=140)
-
-# ---------------- (Appended) Conversation + Shopkeeper Dashboard -----------------
-st.divider()
-st.subheader("Conversation")
-for _msg in reversed(state.chat[-25:]):
-    if _msg['role'] == 'user':
-        st.markdown(f"🧑 **You:** {_msg['text']}")
-    else:
-        st.markdown(f"🤖 **Agent:** {_msg['text']}")
-
-with tabs[1]:
+def render_shopkeeper_dashboard(key_prefix: str = "shop_tab"):
     st.header("Shopkeeper Dashboard")
     st.subheader("Inventory")
     st.table([
@@ -488,17 +310,17 @@ with tabs[1]:
             )
         col_a, col_b, col_c = st.columns(3)
         with col_a:
-            if st.button("Progress Status Simulation"):
+            if st.button("Progress Status Simulation", key=f"{key_prefix}_prog_status"):
                 update_statuses()
                 force_rerun()
         with col_b:
-            if st.button("Reload From DB"):
+            if st.button("Reload From DB", key=f"{key_prefix}_reload_db"):
                 state.orders = load_orders()
                 state.chat = load_chat()
                 recompute_inventory_from_orders()
                 force_rerun()
         with col_c:
-            if st.button("Recompute Inventory"):
+            if st.button("Recompute Inventory", key=f"{key_prefix}_recompute_inv"):
                 recompute_inventory_from_orders()
                 st.success("Inventory recomputed from all orders.")
     else:
@@ -506,5 +328,181 @@ with tabs[1]:
 
     if not model:
         st.warning("Gemini API key not configured. Set GOOGLE_API_KEY for full AI responses.")
+
+
+
+
+with tabs[0]:
+    st.header("Customer Assistant")
+    st.caption("Talk or type in Hindi / English / Hinglish. Orders & queries handled by the AI.")
+
+    # Global CSS for cleaner UI
+    st.markdown(
+        """
+        <style>
+    /* Layout padding reduction */
+    .block-container {padding-top:0.6rem !important;}
+    .better-button {position:relative;display:inline-flex;align-items:center;gap:.55rem;background:linear-gradient(135deg,#2563eb,#1d4ed8);color:#fff !important;border:1px solid #1e40af;padding:0.60rem 1.05rem;border-radius:10px;font-weight:600;font-size:.85rem;letter-spacing:.3px;cursor:pointer;box-shadow:0 2px 4px rgba(0,0,0,.4),0 0 0 2px rgba(37,99,235,.18);transition:background .18s,border-color .18s,transform .18s,box-shadow .25s;}
+    .better-button:hover:not([disabled]) {background:linear-gradient(135deg,#1d4ed8,#2563eb);transform:translateY(-1px);}
+    .better-button:active:not([disabled]) {transform:translateY(0);background:#1e3a8a;}
+    .better-button:focus-visible {outline:2px solid #93c5fd;outline-offset:3px;}
+    .better-button[disabled] {opacity:.55;cursor:not-allowed;}
+    .better-button[data-state='listening'] {background:#dc2626;border-color:#b91c1c;box-shadow:0 0 0 2px rgba(239,68,68,.35),0 4px 10px -2px rgba(239,68,68,.4);}
+    .better-button[data-state='listening'] .btn-label:before {content:'\25CF';display:inline-block;color:#fecaca;animation:blink 1s linear infinite;margin-right:4px;font-size:.7rem;}
+    .better-button[data-state='listening']::after {content:"";position:absolute;inset:-6px;border:2px solid rgba(239,68,68,.45);border-radius:14px;animation:pulse 1.2s ease-in-out infinite;}
+    @keyframes pulse {0% {transform:scale(.92);opacity:1;}70% {transform:scale(1.15);opacity:0;}100% {opacity:0;}}
+    @keyframes blink {0%,60% {opacity:1;}61%,100% {opacity:.2;}}
+    .better-button .btn-label {display:inline-block;}
+    /* Voice input container */
+    .voice-box {border:1px solid #30363d;padding:0.9rem 1.05rem;border-radius:12px;background:#1d232a;color:#d2d8df;}
+    .voice-title {font-size:1.0rem;font-weight:600;margin-bottom:0.35rem;display:flex;align-items:center;gap:.4rem;color:#f1f5f9;}
+    .voice-box button {background:#2563eb;color:#ffffff !important;border:1px solid #1d4ed8;padding:0.55rem 0.95rem;border-radius:8px;font-weight:600;cursor:pointer;transition:background .15s,border-color .15s;}
+    .voice-box button:hover {background:#1d4ed8;border-color:#1e40af;}
+    .voice-box button:active {background:#1e3a8a;border-color:#1e3a8a;}
+    #sr_status {color:#94a3b8;}
+        .chat-wrap {border:1px solid #30363d;border-radius:12px;padding:.75rem;background:#0f1115;max-height:480px;overflow-y:auto;}
+        .msg-user {background:#2563eb10;border:1px solid #2563eb30;padding:.55rem .75rem;border-radius:10px;margin-bottom:.6rem;}
+        .msg-ai {background:#10b98110;border:1px solid #10b98130;padding:.55rem .75rem;border-radius:10px;margin-bottom:.6rem;}
+        .badge {padding:2px 8px;border-radius:12px;font-size:.7rem;font-weight:600;display:inline-block;}
+        .status-processing {background:#f59e0b22;color:#f59e0b;border:1px solid #f59e0b55;}
+        .status-out-for-delivery {background:#6366f122;color:#6366f1;border:1px solid #6366f155;}
+        .status-delivered {background:#10b98122;color:#10b981;border:1px solid #10b98155;}
+        ::-webkit-scrollbar {width:8px;}::-webkit-scrollbar-thumb {background:#333;border-radius:6px;}
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+
+    lang_label = st.selectbox(
+        "Language",
+        options=["Hindi (hi-IN)", "English (en-IN)"],
+        index=0,
+        help="Choose before recording"
+    )
+    lang_code = "hi-IN" if lang_label.startswith("Hindi") else "en-IN"
+
+    # Install parent listener (once) to capture postMessage from iframe
+    components.html("""
+    <script>
+    if(!window._VOICE_LISTENER_INSTALLED){
+    window._VOICE_TRANSCRIPT_JSON = window._VOICE_TRANSCRIPT_JSON || '';
+    window.addEventListener('message', (e)=>{
+       if(e.data && e.data.type==='VOICE_TRANSCRIPT' && e.data.value){
+        try{ window._VOICE_TRANSCRIPT_JSON = JSON.stringify(e.data.value);}catch(err){console.warn(err);} }
+    });
+    window._VOICE_LISTENER_INSTALLED = true;
+    }
+    </script>
+    """, height=10)
+
+    # Web Speech API block (runs in iframe, sends transcript via postMessage to parent)
+    speech_recognition = """
+    <script>
+    const langCode = '%s';
+    let recognition; let listening=false;
+    function init(){
+        if(!recognition){
+            recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
+            recognition.lang = langCode;
+            recognition.interimResults = false;
+            recognition.maxAlternatives = 1;
+            recognition.onresult = (e)=>{ window._LAST_FINAL = e.results[0][0].transcript; };
+            recognition.onerror = (e)=>{ setStatus('Error: '+ e.error); listening=false; };
+            recognition.onend = ()=>{ if(listening){ listening=false; finalize(); } };
+        }
+    }
+    function setStatus(s){ const el=document.getElementById('sr_status'); if(el) el.innerText=s; }
+    function start(){
+        init();
+        if(listening) return;
+        window._LAST_FINAL='';
+        listening=true;
+        setStatus('Listening...');
+        try { recognition.start(); } catch(err){ setStatus('Start err: '+ err.message); listening=false; }
+    }
+    function finalize(){
+        const t = window._LAST_FINAL || '';
+        const c = document.getElementById('captured_text');
+        if(t){
+            if(c) c.textContent = t;
+            setStatus('Captured');
+            const payload = { id: Date.now().toString() + '-' + Math.random().toString(36).slice(2,8), text: t };
+            window.parent.postMessage({ type:'VOICE_TRANSCRIPT', value: payload }, '*');
+        } else {
+            setStatus('No speech');
+            if(c) c.textContent='';
+        }
+    }
+    </script>
+    <div class='voice-box'>
+      <button class="better-button" onclick="start()"><span class='btn-label'>Start Listening</span></button>
+      <span id='sr_status' style='margin-left:8px;font-size:0.8rem;opacity:0.75; color:#ffffff'>Idle</span>
+      <div id='captured_text' style='margin-top:6px;font-size:0.75rem;color:#cbd5e1;min-height:16px;word-wrap:break-word;'></div>
+      <div style='margin-top:0.6rem;font-size:0.65rem;opacity:0.55;color:#ffffff'>Auto-send enabled.</div>
+    </div>
+    """ % lang_code
+    components.html(speech_recognition, height=140)
+    recognized_payload = streamlit_js_eval(
+        js_expressions="window._VOICE_TRANSCRIPT_JSON",
+        key="speech_eval"
+    )
+
+    # Process recognized speech (final) automatically
+# Process recognized speech (final) automatically
+    # Auto-send using unique session id payload
+    if recognized_payload:
+        try:
+            data_obj = json.loads(recognized_payload)
+            sid = data_obj.get('id')
+            txt = (data_obj.get('text') or '').strip()
+        except Exception:
+            sid = None; txt = ''
+        if sid and txt and sid != state.last_voice_session_id:
+            with st.spinner("Processing voice..."):
+                state.chat.append({"role":"user","text":txt})
+                save_chat('user', txt)
+                parsed = process_user_message(txt)
+                reply = parsed.get('response_text','(No response)')
+                state.chat.append({"role":"assistant","text":reply})
+                save_chat('assistant', reply, parsed.get('order_id'))
+                speak(reply)
+                state.last_voice_session_id = sid
+                state.last_voice_text = txt
+
+
+    # Removed manual send / resend / clear buttons for simplicity
+
+    manual_col, send_col = st.columns([4,1])
+    with manual_col:
+        manual_text = st.text_input("Type a message", placeholder="e.g. 2 doodh 1 bread status?")
+    with send_col:
+        if st.button("Send", disabled=not manual_text.strip(), use_container_width=True):
+            with st.spinner("Thinking..."):
+                state.chat.append({"role":"user","text":manual_text})
+                save_chat('user', manual_text)
+                parsed = process_user_message(manual_text)
+                reply = parsed.get('response_text', '(No response)')
+                state.chat.append({"role":"assistant","text":reply})
+                save_chat('assistant', reply, parsed.get('order_id'))
+                speak(reply)
+
+    # Conversation (now only inside Customer App tab)
+    st.divider()
+    st.subheader("Conversation")
+    chat_container = st.container()
+    with chat_container:
+        for _msg in reversed(state.chat[-40:]):
+            if _msg['role'] == 'user':
+                st.markdown(f"<div class='msg-user'><strong>You:</strong> {_msg['text']}</div>", unsafe_allow_html=True)
+            else:
+                st.markdown(f"<div class='msg-ai'><strong>AI:</strong> {_msg['text']}</div>", unsafe_allow_html=True)
+
+    # Fallback inline Shopkeeper dashboard (optional quick view)
+    with st.expander("Shopkeeper Dashboard (Quick View)", expanded=False):
+        render_shopkeeper_dashboard("inline")
+
+# ---------------- Shopkeeper Dashboard -----------------
+with tabs[1]:
+    render_shopkeeper_dashboard("tab")
 
 st.caption("Prototype: Voice via Web Speech API; AI reasoning Gemini; TTS gTTS; persistence SQLite (data.db).")
