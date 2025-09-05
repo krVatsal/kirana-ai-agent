@@ -58,6 +58,10 @@ if 'last_voice_session_id' not in state:
     state.last_voice_session_id = None
 if 'last_voice_text' not in state:
     state.last_voice_text = None
+if 'pending_voice_text' not in state:
+    state.pending_voice_text = ''
+if 'manual_text_input' not in state:
+    state.manual_text_input = ''
 if 'last_stt_error' not in state:
     state.last_stt_error = None
 if 'stt_component_version' not in state:
@@ -447,44 +451,51 @@ with tabs[0]:
         key="speech_eval"
     )
 
-    # Process recognized speech (final) automatically
-# Process recognized speech (final) automatically
-    # Auto-send using unique session id payload
+    # Capture voice payload ONLY (no auto-send) and prefill input
+# Capture voice payload and prefill input
     if recognized_payload:
-        try:
-            data_obj = json.loads(recognized_payload)
-            sid = data_obj.get('id')
-            txt = (data_obj.get('text') or '').strip()
-        except Exception:
-            sid = None; txt = ''
-        if sid and txt and sid != state.last_voice_session_id:
-            with st.spinner("Processing voice..."):
-                state.chat.append({"role":"user","text":txt})
-                save_chat('user', txt)
-                parsed = process_user_message(txt)
-                reply = parsed.get('response_text','(No response)')
-                state.chat.append({"role":"assistant","text":reply})
-                save_chat('assistant', reply, parsed.get('order_id'))
-                speak(reply)
-                state.last_voice_session_id = sid
-                state.last_voice_text = txt
+     try:
+        data_obj = json.loads(recognized_payload)
+        sid = data_obj.get('id')
+        txt = (data_obj.get('text') or '').strip()
+     except Exception:
+        sid = None; txt = ''
+     if sid and txt and sid != state.last_voice_session_id:
+        state.last_voice_session_id = sid
+        state.last_voice_text = txt
+        state.pending_voice_text = txt
+        # Prefill the text box directly
+        st.session_state['msg_input_widget'] = txt
 
-
-    # Removed manual send / resend / clear buttons for simplicity
 
     manual_col, send_col = st.columns([4,1])
     with manual_col:
-        manual_text = st.text_input("Type a message", placeholder="e.g. 2 doodh 1 bread status?")
+     manual_text = st.text_input(
+        "Type a message",
+        placeholder="e.g. 2 doodh 1 bread status?",
+        key='msg_input_widget'
+    )
+
+     if state.pending_voice_text and manual_text == state.pending_voice_text:
+        st.caption("Captured from voice. Edit if needed, then press Send.")
+
+
     with send_col:
-        if st.button("Send", disabled=not manual_text.strip(), use_container_width=True):
-            with st.spinner("Thinking..."):
-                state.chat.append({"role":"user","text":manual_text})
-                save_chat('user', manual_text)
-                parsed = process_user_message(manual_text)
-                reply = parsed.get('response_text', '(No response)')
-                state.chat.append({"role":"assistant","text":reply})
-                save_chat('assistant', reply, parsed.get('order_id'))
-                speak(reply)
+     if st.button("Send", disabled=not manual_text.strip(), use_container_width=True):
+        user_msg = manual_text.strip()
+        with st.spinner("Thinking..."):
+            state.chat.append({"role":"user","text":user_msg})
+            save_chat('user', user_msg)
+            parsed = process_user_message(user_msg)
+            reply = parsed.get('response_text', '(No response)')
+            state.chat.append({"role":"assistant","text":reply})
+            save_chat('assistant', reply, parsed.get('order_id'))
+            speak(reply)
+        if state.pending_voice_text == user_msg:
+            state.pending_voice_text = ''
+        st.session_state['msg_input_widget'] = ''   # clear box
+
+
 
     # Conversation (now only inside Customer App tab)
     st.divider()

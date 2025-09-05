@@ -1,14 +1,33 @@
-[project]
-name = "conversational-ai-agent-for-kirana-stores"
+[tool.poetry]
+name = "kirana-ai-agent"
 version = "0.1.0"
-description = "Add your description here"
+description = "Voice-enabled conversational AI agent for Kirana store ordering & inventory management."
+authors = ["krVatsal <kumarvatsal34@gmail.com>"]
 readme = "README.md"
-requires-python = ">=3.12"
-dependencies = [
-	"streamlit",
-	"streamlit-mic-recorder",
-	"google-generativeai",
-	"langgraph",
-	"gTTS"
-	,"python-dotenv"
-]
+packages = []  # Single-file Streamlit app (app.py); no package dir
+
+[tool.poetry.dependencies]
+python = ">=3.10,<4.0"
+streamlit = "*"
+google-generativeai = "*"
+langgraph = "*"
+gTTS = "*"
+python-dotenv = "*"
+streamlit-js-eval = "*"
+
+[tool.poetry.group.dev.dependencies]
+black = "*"
+ruff = "*"
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.ruff]
+line-length = 100
+select = ["E","F","I"]
+ignore = []
+
+[build-system]
+requires = ["poetry-core>=1.5.0"]
+build-backend = "poetry.core.masonry.api"
