@@ -7,10 +7,8 @@ import streamlit as st
 from langgraph.graph import StateGraph, END
 from gtts import gTTS
 import streamlit.components.v1 as components
+from streamlit_js_eval import streamlit_js_eval
 from dotenv import load_dotenv
-from bokeh.models.widgets import Button
-from bokeh.models import CustomJS
-from streamlit_bokeh_events import streamlit_bokeh_events
 
 load_dotenv()
 
@@ -695,54 +693,107 @@ with tabs[0]:
     
     col1, col2, col3 = st.columns([1, 8, 1])
     
-    # Voice button using Bokeh - working solution!
+    # Working voice button with HTML5 speech recognition
     with col1:
-        stt_button = Button(label="🎤", width=45, height=45)
+        # Create a simple voice input that writes to session state
+        voice_html = f"""
+        <div style="text-align: center;">
+            <button onclick="startVoice()" id="voiceBtn" style="
+                background: #25d366;
+                color: white;
+                border: none;
+                border-radius: 50%;
+                width: 55px;
+                height: 55px;
+                font-size: 20px;
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                margin: auto;
+            ">🎤</button>
+        </div>
         
-        stt_button.js_on_event("button_click", CustomJS(code=f"""
-            var recognition = new webkitSpeechRecognition();
-            recognition.continuous = true;
-            recognition.interimResults = true;
-            recognition.lang = '{lang_code}';
-         
-            recognition.onresult = function (e) {{
-                var value = "";
-                for (var i = e.resultIndex; i < e.results.length; ++i) {{
-                    if (e.results[i].isFinal) {{
-                        value += e.results[i][0].transcript;
-                    }}
-                }}
-                if ( value != "") {{
-                    document.dispatchEvent(new CustomEvent("GET_TEXT", {{detail: value}}));
+        <script>
+        let recognition;
+        
+        function startVoice() {{
+            if (!recognition) {{
+                if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {{
+                    recognition = new (window.webkitSpeechRecognition || window.SpeechRecognition)();
+                    recognition.lang = '{lang_code}';
+                    recognition.continuous = false;
+                    recognition.interimResults = false;
+                    
+                    recognition.onstart = function() {{
+                        document.getElementById('voiceBtn').innerHTML = '🔴';
+                        document.getElementById('voiceBtn').style.background = '#ff4444';
+                    }};
+                    
+                    recognition.onresult = function(event) {{
+                        const transcript = event.results[0][0].transcript;
+                        
+                        // Find the text input in parent window and set value
+                        const parentDoc = window.parent.document;
+                        const inputs = parentDoc.querySelectorAll('input[type="text"]');
+                        
+                        for (let input of inputs) {{
+                            if (input.placeholder && input.placeholder.includes('message')) {{
+                                input.value = transcript;
+                                
+                                // Trigger input events
+                                input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                                input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                                
+                                // Auto-click send button after a short delay
+                                setTimeout(() => {{
+                                    const buttons = parentDoc.querySelectorAll('button');
+                                    for (let btn of buttons) {{
+                                        if (btn.textContent.includes('📤') || btn.textContent.includes('Send')) {{
+                                            btn.click();
+                                            break;
+                                        }}
+                                    }}
+                                }}, 500);
+                                
+                                break;
+                            }}
+                        }}
+                        
+                        resetButton();
+                    }};
+                    
+                    recognition.onerror = function(event) {{
+                        console.error('Speech error:', event.error);
+                        alert('Voice recognition failed: ' + event.error);
+                        resetButton();
+                    }};
+                    
+                    recognition.onend = function() {{
+                        resetButton();
+                    }};
+                }} else {{
+                    alert('Speech recognition not supported. Please use Chrome or Edge.');
+                    return;
                 }}
             }}
-            recognition.start();
-            """))
-
-        voice_result = streamlit_bokeh_events(
-            stt_button,
-            events="GET_TEXT",
-            key="listen",
-            refresh_on_update=False,
-            override_height=50,
-            debounce_time=0)
-
-        # Handle voice result and auto-send
-        if voice_result:
-            if "GET_TEXT" in voice_result:
-                voice_text = voice_result.get("GET_TEXT").strip()
-                if voice_text:
-                    st.success(f"🎤 Heard: {voice_text}")
-                    # Auto-send the voice input
-                    with st.spinner("Processing voice input..."):
-                        state.chat.append({"role":"user","text":voice_text})
-                        save_chat('user', voice_text)
-                        parsed = process_user_message(voice_text)
-                        reply = parsed.get('response_text', '(No response)')
-                        state.chat.append({"role":"assistant","text":reply})
-                        save_chat('assistant', reply, parsed.get('order_id'))
-                        speak(reply)
-                    force_rerun()
+            
+            try {{
+                recognition.start();
+            }} catch (error) {{
+                console.error('Failed to start:', error);
+                alert('Failed to start voice recognition.');
+            }}
+        }}
+        
+        function resetButton() {{
+            document.getElementById('voiceBtn').innerHTML = '🎤';
+            document.getElementById('voiceBtn').style.background = '#25d366';
+        }}
+        </script>
+        """
+        
+        st.components.v1.html(voice_html, height=80)
     
     # Text input
     with col2:
