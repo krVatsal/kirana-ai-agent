@@ -54,11 +54,10 @@ if 'chat_loaded' not in state:
     state.inventory = base_inventory
 if 'manual_text_input' not in state:
     state.manual_text_input = ''
-if 'msg_input_prefill' not in state:
-    state.msg_input_prefill = ''
-if 'clear_msg_input' not in state:
-    state.clear_msg_input = False
-    state.stt_component_version = 0
+if 'msg_input_value' not in state:
+    state.msg_input_value = ''
+if 'voice_input_counter' not in state:
+    state.voice_input_counter = 0
 # ---------------- Gemini Setup (support st.secrets) -----------------
 def _fetch_api_key():
     # Priority: st.secrets (flat), st.secrets["google"]["api_key"], then environment
@@ -666,19 +665,11 @@ with tabs[0]:
     lang_label = st.selectbox("", options=["Hindi (hi-IN)", "English (en-IN)"], index=0, label_visibility="collapsed")
     lang_code = "hi-IN" if lang_label.startswith("Hindi") else "en-IN"
 
-    # Clear request from previous send
-    if state.clear_msg_input:
-        if 'msg_input_widget' in st.session_state:
-            del st.session_state['msg_input_widget']
-        state.clear_msg_input = False
-        if state.msg_input_prefill:
-            state.msg_input_prefill = ''
 
-    # Determine initial value only if widget not yet created
-    if 'msg_input_widget' not in st.session_state:
-        initial_value = state.msg_input_prefill or ''
-    else:
-        initial_value = st.session_state.get('msg_input_widget', '')
+    # Always use a single session state variable for input
+    # Initialize the input value state if not present
+    if not hasattr(state, 'msg_input_value'):
+        state.msg_input_value = ''
 
     # Chat messages container
     for _msg in state.chat[-30:]:  # Show last 30 messages
@@ -749,17 +740,6 @@ with tabs[0]:
                                 input.dispatchEvent(new Event('input', {{ bubbles: true }}));
                                 input.dispatchEvent(new Event('change', {{ bubbles: true }}));
                                 
-                                // Auto-click send button after a short delay
-                                setTimeout(() => {{
-                                    const buttons = parentDoc.querySelectorAll('button');
-                                    for (let btn of buttons) {{
-                                        if (btn.textContent.includes('📤') || btn.textContent.includes('Send')) {{
-                                            btn.click();
-                                            break;
-                                        }}
-                                    }}
-                                }}, 500);
-                                
                                 break;
                             }}
                         }}
@@ -814,22 +794,24 @@ with tabs[0]:
     }
     """
     
-    voice_transcript = streamlit_js_eval(js_expressions=voice_check_script, key="voice_check")
+    voice_transcript = streamlit_js_eval(js_expressions=voice_check_script, key=f"voice_check_{state.voice_input_counter}")
     
-    # If we got a voice transcript, set it in session state
+    # If we got a voice transcript, update our state and force widget recreation
     if voice_transcript:
-        st.session_state['msg_input_widget'] = voice_transcript
+        state.msg_input_value = voice_transcript
+        state.voice_input_counter += 1  # Force widget recreation
     
-    # Text input
+    # Text input - use a dynamic key to recreate when needed
     with col2:
         manual_text = st.text_input(
             "",
             placeholder="Type a message...",
-            value=initial_value,
-            key='msg_input_widget',
+            value=state.msg_input_value,
+            key=f'msg_input_widget_{state.voice_input_counter}',
             label_visibility="collapsed"
         )
-        state.msg_input_prefill = ''  # reset prefill so next rerun doesn't overwrite user edits
+        # Update our state with the current input value
+        state.msg_input_value = manual_text
 
     # Send button  
     with col3:
@@ -838,7 +820,7 @@ with tabs[0]:
     st.markdown('</div>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)  # Close main container
     
-    # Process send
+    # Process send - only when user clicks send button
     if send_clicked and manual_text.strip():
         user_msg = manual_text.strip()
         with st.spinner("Thinking..."):
@@ -849,7 +831,9 @@ with tabs[0]:
             state.chat.append({"role":"assistant","text":reply})
             save_chat('assistant', reply, parsed.get('order_id'))
             speak(reply)
-        state.clear_msg_input = True
+        # Clear input after send by resetting state and forcing widget recreation
+        state.msg_input_value = ''
+        state.voice_input_counter += 1
         force_rerun()
 
 
@@ -860,3 +844,4 @@ with tabs[1]:
     render_shopkeeper_dashboard("tab")
 
 st.caption("Prototype: Voice via Web Speech API; AI reasoning Gemini; TTS gTTS; persistence SQLite (data.db).")
+ 
