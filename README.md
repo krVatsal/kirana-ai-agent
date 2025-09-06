@@ -1,6 +1,7 @@
 # Kirana AI Agent
 
-A conversational AI assistant for Indian Kirana (grocery) stores. Customers and shopkeepers can interact via chat or voice, place orders, check inventory, and get real-time responses in Hindi, English, or Hinglish.
+A conversational AI assistant for Indian Kirana (grocery) stores. Customers and shopkeepers can interact via chat or voice, place orders, check inventory, and get real-time responses in Hindi, English, or Hinglish.]
+Demo Video: https://drive.google.com/file/d/10gY_ajJ4q9VKKET4VSWUpbOeNluq5h42/view?usp=sharing
 
 ## Features
 
@@ -114,3 +115,4 @@ MIT License - see LICENSE file for details
 ## Support
 
 For questions or issues, please open an issue on GitHub or contact the maintainers.
+
